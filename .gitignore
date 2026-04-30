@@ -1,0 +1,101 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfstate.d/
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Terraform variable files with secrets
+*.tfvars
+!*.tfvars.example
+
+# Sensitive files — never commit
+*.pem
+*.key
+*.p12
+*.pfx
+*.env
+.env.*
+secrets.yml
+secrets.yaml
+credentials
+
+# AWS credentials
+.aws/credentials
+.aws/config
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+
+# pre-commit
+.pre-commit-config.yaml.lock
+
+# tflint
+.tflint.hcl.lock
+
+# checkov
+.checkov.baseline
+
+# Node (if any tooling is Node-based)
+node_modules/
+
+# Python (if any scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.orig

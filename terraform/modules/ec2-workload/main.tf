@@ -16,6 +16,20 @@ locals {
   name_prefix = "${var.project}-${var.environment}"
 }
 
+# Resolve Golden AMI from SSM Parameter (seeded by Terraform, updated by Image Builder)
+data "aws_ssm_parameter" "golden_ami" {
+  count = var.golden_ami_parameter_name != "" ? 1 : 0
+  name  = var.golden_ami_parameter_name
+}
+
+locals {
+  resolved_ami_id = (
+    var.ami_id_override != ""
+    ? var.ami_id_override
+    : data.aws_ssm_parameter.golden_ami[0].value
+  )
+}
+
 resource "aws_security_group" "workload" {
   name        = "${local.name_prefix}-sg-workload"
   description = "Workload instances: no inbound, egress to S3 and VPC endpoints (rule added externally)."
@@ -77,6 +91,7 @@ resource "aws_s3_bucket_policy" "diagnostics" {
 }
 
 data "aws_iam_policy_document" "diagnostics_bucket" {
+  # Deny any request not using TLS
   statement {
     sid    = "DenyNonTLS"
     effect = "Deny"
@@ -90,6 +105,23 @@ data "aws_iam_policy_document" "diagnostics_bucket" {
       test     = "Bool"
       variable = "aws:SecureTransport"
       values   = ["false"]
+    }
+  }
+
+  # Restrict PutObject to the workload role only
+  statement {
+    sid    = "RestrictPutObjectToWorkloadRole"
+    effect = "Deny"
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.diagnostics.arn}/*"]
+    condition {
+      test     = "StringNotLike"
+      variable = "aws:PrincipalArn"
+      values   = [var.workload_role_arn]
     }
   }
 }
@@ -107,7 +139,7 @@ resource "aws_launch_template" "workload" {
   name        = "${local.name_prefix}-lt-workload"
   description = "Golden AMI-based launch template for ${var.workload_name}"
 
-  image_id      = var.ami_id
+  image_id      = local.resolved_ami_id
   instance_type = var.instance_type
   key_name      = null
 

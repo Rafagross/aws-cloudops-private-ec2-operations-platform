@@ -42,16 +42,10 @@ variable "alert_email" {
   default     = "rafagross15@gmail.com"
 }
 
-variable "ami_id" {
-  description = <<-EOT
-    Golden AMI ID for the workload Launch Template.
-    For initial deploy, supply the current AL2023 arm64 AMI for us-east-1:
-    aws ssm get-parameter \
-      --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64 \
-      --query Parameter.Value --output text
-  EOT
-  type        = string
-}
+# ami_id removed — AMI is now resolved automatically from SSM Parameter
+# /${var.project}/${var.environment}/golden-ami/al2023-arm64/latest
+# Seeded on first apply from the AWS-managed AL2023 parameter.
+# Image Builder overwrites the value after each successful pipeline run.
 
 variable "image_builder_logs_bucket" {
   description = "S3 bucket for Image Builder logs. Leave empty to reuse diagnostics bucket."

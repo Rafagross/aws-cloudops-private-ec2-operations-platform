@@ -15,6 +15,27 @@ locals {
   diagnostics_bucket_name = "${var.project}-${var.environment}-s3-diagnostics-${data.aws_caller_identity.current.account_id}"
 }
 
+# Bootstrap: seed the golden AMI parameter from AWS-managed AL2023 on first
+# apply.  After Image Builder runs its first build it will overwrite this
+# value; lifecycle ignore_changes prevents Terraform from fighting back.
+data "aws_ssm_parameter" "al2023_seed" {
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+}
+
+resource "aws_ssm_parameter" "golden_ami" {
+  name        = "/${var.project}/${var.environment}/golden-ami/al2023-arm64/latest"
+  type        = "String"
+  value       = data.aws_ssm_parameter.al2023_seed.value
+  description = "Latest Golden AMI ID. Seeded by Terraform; updated by Image Builder pipeline."
+  overwrite   = true
+
+  tags = { Name = "${var.project}-${var.environment}-param-golden-ami" }
+
+  lifecycle {
+    ignore_changes = [value] # Image Builder owns the value after first build
+  }
+}
+
 # 1. KMS
 module "kms" {
   source      = "../../modules/kms"
@@ -52,7 +73,12 @@ module "ec2_workload" {
   s3_prefix_list_id      = data.aws_ec2_managed_prefix_list.s3.id
   kms_key_arn            = module.kms.key_arn
   instance_profile_name  = module.iam_roles.workload_instance_profile_name
-  ami_id                 = var.ami_id
+  workload_role_arn      = module.iam_roles.workload_role_arn
+
+  # AMI resolved from SSM — no manual input required
+  golden_ami_parameter_name = aws_ssm_parameter.golden_ami.name
+
+  depends_on = [aws_ssm_parameter.golden_ami]
 }
 
 # 5. VPC endpoints — needs workload SG

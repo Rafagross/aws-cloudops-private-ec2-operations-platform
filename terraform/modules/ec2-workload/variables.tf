@@ -32,9 +32,23 @@ variable "instance_profile_name" {
   type        = string
 }
 
-variable "ami_id" {
-  description = "Golden AMI ID."
+variable "workload_role_arn" {
+  description = "ARN of the workload IAM role — used in diagnostics bucket policy."
   type        = string
+}
+
+variable "golden_ami_parameter_name" {
+  description = "SSM Parameter name holding the current Golden AMI ID. Resolved at plan time."
+  type        = string
+  default     = ""
+}
+
+# ami_id removed — use golden_ami_parameter_name instead.
+# Kept as optional escape hatch for local testing only.
+variable "ami_id_override" {
+  description = "Direct AMI ID override for local testing. Leave empty in all other cases."
+  type        = string
+  default     = ""
 }
 
 variable "instance_type" {

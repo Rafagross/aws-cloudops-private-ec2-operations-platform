@@ -137,6 +137,17 @@ resource "aws_iam_role_policy_attachment" "backup_restore_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
 }
 
+##############################################################################
+# Break-glass role
+# EMERGENCY USE ONLY — assumption triggers SNS alert via EventBridge/CloudTrail.
+# Controls:
+#   - MFA required on AssumeRole
+#   - max_session_duration = 1 hour
+#   - Read-only log/backup scoped to Get*/Describe* (no write, no delete)
+#   - Destructive actions (backup delete, KMS schedule) intentionally retained
+#     for true DR scenarios; document usage in runbooks/04-break-glass.md
+##############################################################################
+
 resource "aws_iam_role" "break_glass" {
   name                 = "${local.name_prefix}-role-break-glass"
   max_session_duration = 3600
@@ -167,21 +178,43 @@ resource "aws_iam_role_policy" "break_glass_inline" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Destructive backup operations retained for genuine DR scenarios.
+        # Requires MFA (enforced on AssumeRole). Usage must be logged in
+        # the incident runbook within 1 hr of session expiry.
         Sid      = "AllowBackupVaultDestructive"
         Effect   = "Allow"
         Action   = ["backup:DeleteRecoveryPoint", "backup:DeleteBackupVault"]
         Resource = "*"
       },
       {
+        # KMS key deletion is a last-resort DR action (e.g. compromised key).
+        # CancelKeyDeletion is included to allow reversal within the waiting period.
         Sid      = "AllowKMSKeyDeletion"
         Effect   = "Allow"
         Action   = ["kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"]
         Resource = var.kms_key_arn
       },
       {
-        Sid      = "AllowReadEverything"
-        Effect   = "Allow"
-        Action   = ["ec2:Describe*", "ssm:Describe*", "ssm:Get*", "logs:*", "backup:Describe*", "backup:List*"]
+        # Read-only observability — scoped to Describe*/Get*/List*.
+        # logs:* removed to prevent log tampering during an incident.
+        Sid    = "AllowReadEverything"
+        Effect = "Allow"
+        Action = [
+          "ec2:Describe*",
+          "ssm:Describe*",
+          "ssm:Get*",
+          "ssm:List*",
+          "logs:Describe*",
+          "logs:Get*",
+          "logs:List*",
+          "logs:FilterLogEvents",
+          "logs:StartQuery",
+          "logs:StopQuery",
+          "logs:GetQueryResults",
+          "backup:Describe*",
+          "backup:List*",
+          "backup:Get*",
+        ]
         Resource = "*"
       },
     ]

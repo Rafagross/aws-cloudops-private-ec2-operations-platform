@@ -48,13 +48,21 @@ resource "aws_iam_role_policy" "ib_ssm_param_write" {
   role = aws_iam_role.image_builder.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = ["ssm:PutParameter", "ssm:GetParameter"]
-      Resource = [
-        "arn:aws:ssm:${local.region}:${local.account_id}:parameter/${var.project}/${var.environment}/golden-ami/*",
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["ssm:PutParameter", "ssm:GetParameter"]
+        Resource = [
+          "arn:aws:ssm:${local.region}:${local.account_id}:parameter/${var.project}/${var.environment}/golden-ami/*",
+        ]
+      },
+      {
+        # Read the heartbeat-api artifact from the diagnostics bucket
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${var.project}-${var.environment}-s3-diagnostics-${local.account_id}/artifacts/heartbeat-api/*"
+      },
+    ]
   })
 }
 
@@ -68,7 +76,7 @@ resource "aws_iam_instance_profile" "image_builder" {
 resource "aws_imagebuilder_infrastructure_configuration" "default" {
   name                          = "${local.name_prefix}-ibinfra-default"
   description                   = "Build infrastructure for Golden AMI pipeline"
-  instance_types                = ["t3.medium"]
+  instance_types                = ["t4g.medium"]
   instance_profile_name         = aws_iam_instance_profile.image_builder.name
   terminate_instance_on_failure = true
 
@@ -188,11 +196,28 @@ resource "aws_imagebuilder_component" "heartbeat_api_install" {
             inputs = { commands = ["mkdir -p /usr/local/bin /etc/heartbeat /var/log/heartbeat"] }
           },
           {
+            # Fetch the arm64 binary from the diagnostics S3 bucket.
+            # Upload before triggering the pipeline:
+            #   aws s3 cp app/heartbeat-api/dist/heartbeat-api \
+            #     s3://<diagnostics-bucket>/artifacts/heartbeat-api/heartbeat-api
+            name   = "FetchBinary"
+            action = "ExecuteBash"
+            inputs = {
+              commands = [
+                "aws s3 cp s3://${var.project}-${var.environment}-s3-diagnostics-$(curl -sf -H 'X-aws-ec2-metadata-token: $(curl -sf -X PUT http://169.254.169.254/latest/api/token -H Ttl:21600)' http://169.254.169.254/latest/dynamic/instance-identity/document | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"accountId\"])')/artifacts/heartbeat-api/heartbeat-api /usr/local/bin/heartbeat-api",
+                "chmod 0755 /usr/local/bin/heartbeat-api",
+                "/usr/local/bin/heartbeat-api --version 2>/dev/null || /usr/local/bin/heartbeat-api &",
+                "sleep 2",
+                "kill %1 2>/dev/null || true",
+              ]
+            }
+          },
+          {
             name   = "InstallService"
             action = "ExecuteBash"
             inputs = {
               commands = [
-                "printf '[Unit]\\nDescription=heartbeat-api\\nAfter=network.target\\n[Service]\\nType=simple\\nUser=nobody\\nExecStart=/usr/local/bin/heartbeat-api\\nRestart=on-failure\\n[Install]\\nWantedBy=multi-user.target\\n' > /etc/systemd/system/heartbeat-api.service",
+                "printf '[Unit]\\nDescription=heartbeat-api\\nAfter=network.target\\n[Service]\\nType=simple\\nUser=nobody\\nEnvironment=PORT=8080\\nExecStart=/usr/local/bin/heartbeat-api\\nRestart=on-failure\\nRestartSec=5\\n[Install]\\nWantedBy=multi-user.target\\n' > /etc/systemd/system/heartbeat-api.service",
                 "systemctl daemon-reload",
                 "systemctl enable heartbeat-api.service",
               ]
@@ -202,20 +227,62 @@ resource "aws_imagebuilder_component" "heartbeat_api_install" {
       },
       {
         name = "validate"
-        steps = [{
-          name   = "ValidateIMDSv2"
-          action = "ExecuteBash"
-          inputs = {
-            commands = [
-              "HTTP=$(curl -s -o /dev/null -w '%{http_code}' http://169.254.169.254/latest/meta-data/ --max-time 2 || echo 000)",
-              "[ \"$HTTP\" = '401' ] || exit 1",
-            ]
-          }
-        }]
+        steps = [
+          {
+            name   = "ValidateBinaryExists"
+            action = "ExecuteBash"
+            inputs = { commands = ["test -x /usr/local/bin/heartbeat-api || exit 1"] }
+          },
+          {
+            name   = "ValidateServiceEnabled"
+            action = "ExecuteBash"
+            inputs = { commands = ["systemctl is-enabled heartbeat-api.service || exit 1"] }
+          },
+          {
+            name   = "ValidateIMDSv2"
+            action = "ExecuteBash"
+            inputs = {
+              commands = [
+                "HTTP=$(curl -s -o /dev/null -w '%{http_code}' http://169.254.169.254/latest/meta-data/ --max-time 2 || echo 000)",
+                "[ \"$HTTP\" = '401' ] || exit 1",
+              ]
+            }
+          },
+        ]
       },
     ]
   })
   tags = { Name = "${local.name_prefix}-ibcomp-heartbeat-api-install" }
+}
+
+resource "aws_imagebuilder_component" "publish_ami_to_ssm" {
+  name     = "${local.name_prefix}-ibcomp-publish-ami-ssm"
+  platform = "Linux"
+  version  = "1.0.0"
+  data = yamlencode({
+    name          = "Publish AMI ID to SSM Parameter"
+    schemaVersion = "1.0"
+    phases = [{
+      name = "build"
+      steps = [{
+        name   = "WriteSSMParameter"
+        action = "ExecuteBash"
+        inputs = {
+          commands = [
+            # IMAGE_ID is injected by Image Builder as an environment variable
+            # during the distribution phase. We publish it here so Terraform
+            # reads it on the next apply via data.aws_ssm_parameter.
+            "REGION=$(curl -sf -H \"X-aws-ec2-metadata-token: $(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds:21600')\" http://169.254.169.254/latest/meta-data/placement/region)",
+            "ACCOUNT=$(curl -sf -H \"X-aws-ec2-metadata-token: $(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds:21600')\" http://169.254.169.254/latest/dynamic/instance-identity/document | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"accountId\"])')",
+            "AMI_ID=$(aws ec2 describe-images --owners self --filters 'Name=tag:GoldenAMI,Values=true' --query 'sort_by(Images, &CreationDate)[-1].ImageId' --output text --region $REGION)",
+            "aws ssm put-parameter --name '/${var.project}/${var.environment}/golden-ami/al2023-arm64/latest' --value $AMI_ID --type String --overwrite --region $REGION",
+            "echo \"Published AMI $AMI_ID to SSM\"",
+          ]
+        }
+      }]
+    }]
+  })
+  tags = { Name = "${local.name_prefix}-ibcomp-publish-ami-ssm" }
 }
 
 resource "aws_imagebuilder_component" "cleanup" {
@@ -260,6 +327,7 @@ resource "aws_imagebuilder_image_recipe" "golden_al2023_arm64" {
   component { component_arn = aws_imagebuilder_component.cis_baseline.arn }
   component { component_arn = aws_imagebuilder_component.cwagent_install.arn }
   component { component_arn = aws_imagebuilder_component.heartbeat_api_install.arn }
+  component { component_arn = aws_imagebuilder_component.publish_ami_to_ssm.arn }
   component { component_arn = aws_imagebuilder_component.cleanup.arn }
 
   tags = { Name = "${local.name_prefix}-ibrecipe-golden-al2023-arm64" }

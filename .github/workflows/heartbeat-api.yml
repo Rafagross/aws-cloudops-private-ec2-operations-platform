@@ -1,0 +1,45 @@
+name: heartbeat-api CI
+
+on:
+  push:
+    paths:
+      - 'app/heartbeat-api/**'
+      - '.github/workflows/heartbeat-api.yml'
+  pull_request:
+    paths:
+      - 'app/heartbeat-api/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Test + Build (arm64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: app/heartbeat-api/go.mod
+
+      - name: Run tests
+        working-directory: app/heartbeat-api
+        run: go test ./... -v
+
+      - name: Build arm64 binary
+        working-directory: app/heartbeat-api
+        run: make build
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: heartbeat-api-arm64
+          path: app/heartbeat-api/dist/heartbeat-api
+          retention-days: 30
